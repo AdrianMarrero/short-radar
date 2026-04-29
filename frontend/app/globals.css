@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tipografía: GT Sectra alike (serif editorial), Söhne alike (sans), JetBrains Mono */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,700;9..144,900&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root {
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --color-paper: #F2EDE4;
+  --color-paper-deep: #E8E1D4;
+  --color-ink: #1B1816;
+  --color-bear: #7A1F1F;
+  --color-bull: #1F4D2C;
+}
+
+html, body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'ss01', 'cv02';
+}
+
+/* Sutil grano de papel */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background-image:
+    radial-gradient(rgba(27, 24, 22, 0.025) 1px, transparent 1px);
+  background-size: 3px 3px;
+  opacity: 0.7;
+}
+
+/* Selection */
+::selection {
+  background-color: var(--color-ink);
+  color: var(--color-paper);
+}
+
+/* Scrollbar discreta */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--color-paper-deep); }
+::-webkit-scrollbar-thumb { background: var(--color-ink); border-radius: 0; }
+
+/* Display heading utility */
+.display-heading {
+  font-family: var(--font-display);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  font-feature-settings: 'ss01';
+}
+
+/* Para tablas compactas con buen ritmo */
+.compact-table {
+  font-feature-settings: 'tnum' 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}

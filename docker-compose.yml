@@ -1,0 +1,44 @@
+# Para levantar todo en local con docker compose up.
+# Útil si no quieres instalar Python ni Node a mano.
+#
+# El frontend NO está dockerizado aquí; en local es más cómodo
+# `cd frontend && npm run dev` y aprovechar el hot-reload.
+
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shortradar
+      POSTGRES_PASSWORD: shortradar
+      POSTGRES_DB: shortradar
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "shortradar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://shortradar:shortradar@db:5432/shortradar
+      ENV: development
+      LOG_LEVEL: INFO
+      CORS_ORIGINS: "http://localhost:3000"
+      ADMIN_TOKEN: dev-token-change-me
+      # Pasa estas si las tienes en el entorno
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,78 @@
+# Short Radar — Render blueprint (FREE TIER)
+#
+# IMPORTANTE: backend y BD DEBEN estar en la misma región para que el
+# hostname interno de la BD se resuelva correctamente. Por defecto Render
+# crea la BD en Oregon, así que la fijamos explícitamente a Frankfurt.
+
+databases:
+  - name: short-radar-db
+    plan: free
+    region: frankfurt          # ¡Misma región que los servicios!
+    databaseName: shortradar
+    user: shortradar
+
+services:
+  # -------------------- Backend (FastAPI) --------------------
+  - type: web
+    name: short-radar-api
+    runtime: python
+    plan: free
+    region: frankfurt
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: short-radar-db
+          property: connectionString
+      - key: ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: WEIGHT_TECHNICAL
+        value: "0.30"
+      - key: WEIGHT_NEWS
+        value: "0.25"
+      - key: WEIGHT_FUNDAMENTAL
+        value: "0.20"
+      - key: WEIGHT_MACRO
+        value: "0.15"
+      - key: WEIGHT_LIQUIDITY
+        value: "0.10"
+      - key: MAX_TICKERS_PER_MARKET
+        value: "80"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+
+  # -------------------- Frontend (Next.js) --------------------
+  - type: web
+    name: short-radar-web
+    runtime: node
+    plan: free
+    region: frankfurt
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: "20.10.0"
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: short-radar-api
+          property: host
+      - key: NEXT_PUBLIC_ADMIN_TOKEN
+        fromService:
+          type: web
+          name: short-radar-api
+          envVarKey: ADMIN_TOKEN

@@ -1,10 +1,12 @@
 """Ranking endpoints — LONG bias edition with conservative/aggressive split."""
 from __future__ import annotations
 
+import math
 from datetime import date as DateType
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -12,6 +14,36 @@ from app.models import ShortScore, Instrument, TechnicalIndicators
 from app.api.schemas import ScoreOut
 
 router = APIRouter(prefix="/api/ranking", tags=["ranking"])
+
+
+def _sanitize_floats(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN, +Inf, -Inf) with None.
+
+    Python's stdlib json.dumps (used by Starlette's JSONResponse) rejects
+    these values with `ValueError: Out of range float values are not JSON
+    compliant`. yfinance frequently returns NaN for European tickers'
+    fundamentals (forward_pe, peg_ratio, margins) and a divide-by-zero
+    in derived metrics can produce Inf — sanitize at the response boundary.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_sanitize_floats(v) for v in obj)
+    return obj
+
+
+def _safe_response(out: list[ScoreOut]) -> JSONResponse:
+    """Dump ScoreOut models, strip non-finite floats, return a JSONResponse.
+
+    Bypasses FastAPI's response_model serialization (which would re-introduce
+    NaN floats from the model fields into stdlib json.dumps and crash).
+    """
+    payload = [_sanitize_floats(s.model_dump(mode="json")) for s in out]
+    return JSONResponse(content=payload)
 
 
 def _row_to_score_out(score, inst, tech) -> ScoreOut:
@@ -76,7 +108,7 @@ def get_ranking(
     """General ranking. Long candidates ordered by score."""
     latest_date = db.query(ShortScore.date).order_by(ShortScore.date.desc()).limit(1).scalar()
     if not latest_date:
-        return []
+        return _safe_response([])
 
     q = (
         db.query(ShortScore, Instrument, TechnicalIndicators)
@@ -101,7 +133,7 @@ def get_ranking(
 
     rows = q.order_by(ShortScore.total_score.desc()).limit(limit).all()
     out = [_row_to_score_out(s, i, t) for s, i, t in rows]
-    return _inject_last_close(db, out)
+    return _safe_response(_inject_last_close(db, out))
 
 
 @router.get("/conservative", response_model=list[ScoreOut])
@@ -124,7 +156,7 @@ def get_conservative(
     """
     latest_date = db.query(ShortScore.date).order_by(ShortScore.date.desc()).limit(1).scalar()
     if not latest_date:
-        return []
+        return _safe_response([])
 
     rows = (
         db.query(ShortScore, Instrument, TechnicalIndicators)
@@ -152,7 +184,7 @@ def get_conservative(
         .all()
     )
     out = [_row_to_score_out(s, i, t) for s, i, t in rows]
-    return _inject_last_close(db, out)
+    return _safe_response(_inject_last_close(db, out))
 
 
 @router.get("/aggressive", response_model=list[ScoreOut])
@@ -177,7 +209,7 @@ def get_aggressive(
     """
     latest_date = db.query(ShortScore.date).order_by(ShortScore.date.desc()).limit(1).scalar()
     if not latest_date:
-        return []
+        return _safe_response([])
 
     rows = (
         db.query(ShortScore, Instrument, TechnicalIndicators)
@@ -205,4 +237,4 @@ def get_aggressive(
         .all()
     )
     out = [_row_to_score_out(s, i, t) for s, i, t in rows]
-    return _inject_last_close(db, out)
+    return _safe_response(_inject_last_close(db, out))

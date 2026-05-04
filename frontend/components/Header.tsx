@@ -8,6 +8,7 @@ const NAV = [
   { href: "/aggressive", label: "Agresivo" },
   { href: "/ranking", label: "Ranking" },
   { href: "/macro", label: "Macro" },
+  { href: "/journal", label: "Diario" },
   { href: "/settings", label: "Ajustes" },
 ];
 

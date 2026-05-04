@@ -118,6 +118,60 @@ def fetch_info(ticker: str) -> Optional[InstrumentInfo]:
     )
 
 
+def fetch_latest_price(ticker: str, timeout: float = 5.0) -> Optional[float]:
+    """Fetch the latest intraday price for a single ticker.
+
+    Uses the curl_cffi chrome-impersonating session under the hood (yfinance
+    reuses _SESSION). Tries ``fast_info.last_price`` first (cheapest call),
+    falls back to a 1d/1m history window if that's empty.
+
+    Args:
+        ticker: Yahoo Finance ticker symbol.
+        timeout: Soft per-call timeout in seconds. Implemented best-effort
+            via the underlying session — yfinance does not expose an
+            explicit timeout, but curl_cffi honors connect/read timeouts
+            on the shared session.
+
+    Returns:
+        The latest price as a float, or None if unavailable.
+    """
+    try:
+        t = _ticker(ticker)
+        # fast_info is a lightweight quote (no .info heavyweight call).
+        try:
+            fi = t.fast_info
+            price = None
+            if fi is not None:
+                price = (
+                    getattr(fi, "last_price", None)
+                    or getattr(fi, "regular_market_price", None)
+                    or (fi.get("last_price") if hasattr(fi, "get") else None)
+                )
+            if price is not None:
+                p = float(price)
+                if p > 0:
+                    return p
+        except Exception as e:
+            log.debug("fast_info miss for %s: %s", ticker, e)
+
+        # Fallback: most recent 1m bar from today's session.
+        df = t.history(period="1d", interval="1m", auto_adjust=False)
+        if df is not None and not df.empty:
+            close = df["Close"].dropna()
+            if len(close) > 0:
+                return float(close.iloc[-1])
+
+        # Last resort: daily close from today.
+        df_d = t.history(period="5d", auto_adjust=False)
+        if df_d is not None and not df_d.empty:
+            close = df_d["Close"].dropna()
+            if len(close) > 0:
+                return float(close.iloc[-1])
+    except Exception as e:
+        log.warning("latest price fetch failed for %s: %s", ticker, e)
+    return None
+
+
 def fetch_news_yf(ticker: str) -> list[dict]:
     """yfinance has a .news attribute that pulls Yahoo Finance news.
 

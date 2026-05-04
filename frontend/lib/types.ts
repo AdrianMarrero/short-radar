@@ -163,3 +163,79 @@ export interface WeightsOut {
   macro: number;
   liquidity: number;
 }
+
+// -------- Trades (operations journal) --------
+
+export type TradeStatus = "open" | "closed_win" | "closed_loss" | "stopped";
+export type TradeProfile = "conservative" | "aggressive";
+
+export interface TradeIn {
+  instrument_id?: number;
+  ticker?: string;
+  setup_type?: string;
+  profile: TradeProfile;
+  capital_eur: number;
+  entry_price: number;
+  entry_date?: string;
+  stop_price?: number | null;
+  target_1?: number | null;
+  target_2?: number | null;
+  notes?: string;
+}
+
+export interface TradeCloseIn {
+  exit_price: number;
+  exit_date?: string;
+  notes?: string;
+}
+
+export interface TradeOut {
+  id: number;
+  instrument_id: number;
+  ticker: string;
+  name: string;
+  setup_type: string;
+  profile: TradeProfile;
+  capital_eur: number;
+  entry_price: number;
+  entry_date: string;
+  stop_price: number | null;
+  target_1: number | null;
+  target_2: number | null;
+  exit_price: number | null;
+  exit_date: string | null;
+  status: TradeStatus;
+  notes: string;
+  pnl_pct: number | null;
+  pnl_eur: number | null;
+  created_at: string;
+  updated_at: string;
+  current_price: number | null;
+  pnl_pct_live: number | null;
+  pnl_eur_live: number | null;
+  days_held: number | null;
+}
+
+export interface TradeStatsBucket {
+  n: number;
+  n_closed: number;
+  win_rate_pct: number;
+  avg_return_pct: number;
+  total_pnl_eur: number;
+}
+
+export interface TradeStatsOut {
+  total: number;
+  open: number;
+  closed: number;
+  win_rate_pct: number;
+  avg_return_pct: number;
+  avg_days_held: number;
+  total_pnl_eur: number;
+  best_trade_pct: number | null;
+  worst_trade_pct: number | null;
+  best_trade_ticker: string | null;
+  worst_trade_ticker: string | null;
+  by_setup: Record<string, TradeStatsBucket>;
+  by_profile: Record<string, TradeStatsBucket>;
+}

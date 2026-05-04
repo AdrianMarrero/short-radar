@@ -6,6 +6,10 @@ import type {
   StatsOut,
   BacktestOut,
   WeightsOut,
+  TradeIn,
+  TradeCloseIn,
+  TradeOut,
+  TradeStatsOut,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -30,6 +34,34 @@ async function apiPost<T>(path: string, body?: any): Promise<T> {
       ...(ADMIN_TOKEN ? { "X-Admin-Token": ADMIN_TOKEN } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`API ${path} -> ${res.status}`);
+  }
+  return res.json();
+}
+
+async function apiPatch<T>(path: string, body?: any): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...(ADMIN_TOKEN ? { "X-Admin-Token": ADMIN_TOKEN } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`API ${path} -> ${res.status}`);
+  }
+  return res.json();
+}
+
+async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "DELETE",
+    headers: ADMIN_TOKEN ? { "X-Admin-Token": ADMIN_TOKEN } : undefined,
     cache: "no-store",
   });
   if (!res.ok) {
@@ -95,3 +127,33 @@ export interface PositionSizeOut {
 
 export const calcPositionSize = (payload: PositionSizeIn) =>
   apiPost<PositionSizeOut>(`/api/risk/position-size`, payload);
+
+// -------- Trades (operations journal) --------
+
+export const createTrade = (payload: TradeIn) =>
+  apiPost<TradeOut>(`/api/trades`, payload);
+
+export const getTrades = (status?: "open" | "closed" | "all") => {
+  const qs = status ? `?status=${status}` : "";
+  return apiGet<TradeOut[]>(`/api/trades${qs}`);
+};
+
+export const getTrade = (id: number) => apiGet<TradeOut>(`/api/trades/${id}`);
+
+export const closeTrade = (id: number, payload: TradeCloseIn) =>
+  apiPatch<TradeOut>(`/api/trades/${id}/close`, payload);
+
+export const deleteTrade = (id: number) =>
+  apiDelete<{ status: string; id: number }>(`/api/trades/${id}`);
+
+export const getTradeStats = () => apiGet<TradeStatsOut>(`/api/trades/stats`);
+
+export interface RefreshTradePricesOut {
+  trades: TradeOut[];
+  fetched_at: string;
+  live_count: number;
+  fallback_count: number;
+}
+
+export const refreshTradePrices = () =>
+  apiPost<RefreshTradePricesOut>(`/api/trades/refresh-prices`);

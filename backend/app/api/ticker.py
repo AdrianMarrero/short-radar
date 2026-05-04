@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.api.ranking import _sanitize_floats
 from app.core.database import get_db
 from app.models import (
     Instrument, ShortScore, TechnicalIndicators, Fundamentals,
@@ -101,7 +103,7 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)):
             invalidation_reason=score.invalidation_reason or "",
         )
 
-    return TickerDetailOut(
+    detail = TickerDetailOut(
         instrument=InstrumentOut.model_validate(inst),
         score=score_out,
         technicals=TechnicalsOut.model_validate(tech) if tech else None,
@@ -111,3 +113,7 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)):
         recent_news=[NewsItemOut.model_validate(n) for n in news],
         explanation=score.llm_explanation if score else "",
     )
+    # Sanitize NaN/Inf at the response boundary — yfinance returns NaN
+    # for some fields (esp. European tickers' fundamentals) which
+    # crashes stdlib json.dumps with "Out of range float values".
+    return JSONResponse(content=_sanitize_floats(detail.model_dump(mode="json")))

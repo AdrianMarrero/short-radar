@@ -188,3 +188,81 @@ class BacktestOut(BaseModel):
     avg_return_pct: float
     avg_hold_days: float
     by_setup: dict[str, dict]
+
+
+# -------- Trades (operations journal) --------
+
+
+class TradeIn(BaseModel):
+    """Payload to open a new trade. Either instrument_id or ticker is required."""
+    instrument_id: Optional[int] = None
+    ticker: Optional[str] = None
+    setup_type: str = ""
+    profile: str = "conservative"  # conservative / aggressive
+    capital_eur: float
+    entry_price: float
+    entry_date: Optional[DateType] = None  # defaults to today on the server
+    stop_price: Optional[float] = None
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    notes: str = ""
+
+
+class TradeCloseIn(BaseModel):
+    exit_price: float
+    exit_date: Optional[DateType] = None  # defaults to today on the server
+    notes: Optional[str] = None  # appended to existing notes if provided
+
+
+class TradeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    instrument_id: int
+    ticker: str
+    name: str
+    setup_type: str
+    profile: str
+    capital_eur: float
+    entry_price: float
+    entry_date: DateType
+    stop_price: Optional[float]
+    target_1: Optional[float]
+    target_2: Optional[float]
+    exit_price: Optional[float]
+    exit_date: Optional[DateType]
+    status: str
+    notes: str
+    pnl_pct: Optional[float]
+    pnl_eur: Optional[float]
+    created_at: datetime
+    updated_at: datetime
+
+    # Derived live fields (only meaningful while open)
+    current_price: Optional[float] = None
+    pnl_pct_live: Optional[float] = None
+    pnl_eur_live: Optional[float] = None
+    days_held: Optional[int] = None
+
+
+class TradeStatsBucket(BaseModel):
+    n: int
+    n_closed: int
+    win_rate_pct: float
+    avg_return_pct: float
+    total_pnl_eur: float
+
+
+class TradeStatsOut(BaseModel):
+    total: int
+    open: int
+    closed: int
+    win_rate_pct: float
+    avg_return_pct: float
+    avg_days_held: float
+    total_pnl_eur: float
+    best_trade_pct: Optional[float]
+    worst_trade_pct: Optional[float]
+    best_trade_ticker: Optional[str]
+    worst_trade_ticker: Optional[str]
+    by_setup: dict[str, TradeStatsBucket]
+    by_profile: dict[str, TradeStatsBucket]

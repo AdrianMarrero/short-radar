@@ -5,6 +5,7 @@ import { PriceChart } from "@/components/PriceChart";
 import { ScoreBars } from "@/components/ScoreBars";
 import { SetupBadge, ConvictionBadge } from "@/components/Badges";
 import { PositionSizer } from "@/components/PositionSizer";
+import { TradeIdeaForm } from "@/components/TradeIdeaForm";
 import {
   fmtNum, fmtPct, fmtMoney, fmtRelativeTime, scoreColor, changeColor,
   horizonLabel,
@@ -101,6 +102,12 @@ export default async function TickerPage({ params }: { params: { ticker: string 
                 <div className="text-ink-light">{score.invalidation_reason}</div>
               </div>
             )}
+            <TradeIdeaForm
+              instrumentId={instrument.id}
+              ticker={instrument.ticker}
+              score={score}
+              lastClose={lastPrice ?? null}
+            />
           </div>
         </section>
       )}

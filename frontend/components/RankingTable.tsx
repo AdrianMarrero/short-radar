@@ -1,7 +1,9 @@
 import Link from "next/link";
 import type { ScoreOut } from "@/lib/types";
 import { fmtMoney, fmtPct, scoreColor, changeColor } from "@/lib/format";
-import { SetupBadge, ConvictionBadge } from "./Badges";
+import { SetupBadge, ConvictionBadge, TierBadge, WarningChips } from "./Badges";
+import { YahooLink } from "./YahooLink";
+import { ProbabilityBox } from "./ProbabilityBox";
 
 export function RankingTable({ rows }: { rows: ScoreOut[] }) {
   if (!rows.length) {
@@ -20,6 +22,7 @@ export function RankingTable({ rows }: { rows: ScoreOut[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-ink/15 text-[11px] uppercase tracking-widest text-ink-muted">
+            <th className="text-left px-3 py-3 font-medium">Tier</th>
             <th className="text-left px-4 py-3 font-medium">#</th>
             <th className="text-left px-4 py-3 font-medium">Ticker</th>
             <th className="text-left px-4 py-3 font-medium">Nombre</th>
@@ -30,6 +33,7 @@ export function RankingTable({ rows }: { rows: ScoreOut[] }) {
             <th className="text-left px-4 py-3 font-medium">Setup</th>
             <th className="text-left px-4 py-3 font-medium">Convicción</th>
             <th className="text-right px-4 py-3 font-medium">Squeeze</th>
+            <th className="text-right px-4 py-3 font-medium">Probabilidad</th>
             <th className="text-right px-4 py-3 font-medium">Plan</th>
           </tr>
         </thead>
@@ -39,6 +43,7 @@ export function RankingTable({ rows }: { rows: ScoreOut[] }) {
               key={r.instrument_id}
               className="border-b border-ink/5 hover:bg-paper-deep/40 transition-colors"
             >
+              <td className="px-3 py-3"><TierBadge tier={r.tier} /></td>
               <td className="px-4 py-3 text-ink-muted font-mono tnum">{i + 1}</td>
               <td className="px-4 py-3">
                 <Link
@@ -47,9 +52,11 @@ export function RankingTable({ rows }: { rows: ScoreOut[] }) {
                 >
                   {r.ticker}
                 </Link>
-                <div className="text-[10px] uppercase tracking-wider text-ink-muted font-mono">
-                  {r.exchange}
+                <div className="text-[10px] uppercase tracking-wider text-ink-muted font-mono flex items-center gap-2">
+                  <span>{r.exchange}</span>
+                  <YahooLink ticker={r.ticker} />
                 </div>
+                <WarningChips warnings={r.warnings} />
               </td>
               <td className="px-4 py-3 max-w-[260px]">
                 <div className="truncate">{r.name}</div>
@@ -69,6 +76,21 @@ export function RankingTable({ rows }: { rows: ScoreOut[] }) {
               <td className="px-4 py-3"><ConvictionBadge conviction={r.conviction} /></td>
               <td className="px-4 py-3 text-right font-mono tnum text-ink-muted">
                 {r.squeeze_risk_score.toFixed(0)}
+              </td>
+              <td className="px-4 py-3 text-right">
+                {r.prob_target_1 != null ? (
+                  <ProbabilityBox
+                    probTarget1={r.prob_target_1}
+                    probTarget2={r.prob_target_2}
+                    probStop={r.prob_stop}
+                    probExpire={r.prob_expire}
+                    expectedR={r.expected_r}
+                    edgeClass={r.edge_class}
+                    compact
+                  />
+                ) : (
+                  <span className="text-ink-muted text-xs">—</span>
+                )}
               </td>
               <td className="px-4 py-3 text-right font-mono text-xs tnum text-ink-muted">
                 {r.entry_price && r.stop_price && r.target_2 ? (

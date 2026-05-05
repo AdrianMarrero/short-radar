@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getRanking, getStats, getMacro } from "@/lib/api";
 import { RankingTable } from "@/components/RankingTable";
+import { WakeApiButton } from "@/components/WakeApiButton";
 import { fmtRelativeTime } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -56,8 +57,9 @@ export default async function HomePage() {
       {apiError && (
         <div className="border border-bear/40 bg-bear/5 p-4 mb-8 text-sm">
           <strong className="text-bear">No se pudo conectar al backend.</strong>{" "}
-          <span className="text-ink-light">¿Está arrancado?</span>{" "}
+          <span className="text-ink-light">Render free tier suele dormirse tras 15 min sin tráfico.</span>{" "}
           <code className="font-mono text-xs">{apiError}</code>
+          <WakeApiButton />
           <div className="text-xs text-ink-muted mt-2">
             Si es la primera vez, ejecuta el job para poblar el ranking:{" "}
             <code className="bg-paper-deep px-2 py-1">POST /api/jobs/run-daily</code>

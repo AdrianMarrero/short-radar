@@ -4,6 +4,7 @@ from app.models.market import PriceDaily, TechnicalIndicators
 from app.models.intel import NewsItem, Fundamentals, ShortData, MacroEvent
 from app.models.scoring import ShortScore, Alert, JobRun
 from app.models.trade import Trade
+from app.models.signal import Signal
 
 # Used by core.database.init_db to force registration
 all_models = [
@@ -18,6 +19,7 @@ all_models = [
     Alert,
     JobRun,
     Trade,
+    Signal,
 ]
 
 __all__ = [m.__name__ for m in all_models] + ["all_models"]

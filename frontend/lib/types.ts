@@ -7,6 +7,12 @@ export type SetupType =
 
 export type Conviction = "low" | "medium" | "high";
 
+export type Tier = "A+" | "A" | "B" | "C" | "D";
+export type Category = "investment" | "swing_trade" | "speculative" | "cyclical";
+export type EntryZoneStatus = "green" | "yellow" | "orange" | "red";
+export type ExtensionStatus = "ok" | "warming" | "extended" | "very_late";
+export type EdgeClass = "high_edge" | "positive_edge" | "neutral" | "negative_edge";
+
 export interface ScoreOut {
   instrument_id: number;
   ticker: string;
@@ -32,6 +38,24 @@ export interface ScoreOut {
   target_1: number | null;
   target_2: number | null;
   invalidation_reason: string;
+  // v2 redesign — additive, optional for legacy rows
+  tier?: Tier | null;
+  category?: Category | null;
+  factor_scores?: Record<string, number> | null;
+  multipliers?: Record<string, number> | null;
+  warnings?: string[];
+  explanation?: string[];
+  entry_zone_status?: EntryZoneStatus | null;
+  extension_status?: ExtensionStatus | null;
+  perf_1m_pct?: number | null;
+  // Probabilistic display layer (Monte Carlo). All optional — populated
+  // only when realized volatility is available for the instrument.
+  prob_target_1?: number | null;
+  prob_target_2?: number | null;
+  prob_stop?: number | null;
+  prob_expire?: number | null;
+  expected_r?: number | null;
+  edge_class?: EdgeClass | null;
 }
 
 export interface InstrumentOut {
@@ -238,4 +262,24 @@ export interface TradeStatsOut {
   worst_trade_ticker: string | null;
   by_setup: Record<string, TradeStatsBucket>;
   by_profile: Record<string, TradeStatsBucket>;
+}
+
+export interface SignalStatsBucket {
+  n: number;
+  n_closed: number;
+  win_rate_pct: number;
+  avg_return_pct: number;
+  expectancy: number;
+}
+
+export interface SignalStatsOut {
+  total: number;
+  open: number;
+  closed: number;
+  win_rate_pct: number;
+  avg_return_pct: number;
+  expectancy: number;
+  by_tier: Record<string, SignalStatsBucket>;
+  by_category: Record<string, SignalStatsBucket>;
+  by_setup_type: Record<string, SignalStatsBucket>;
 }

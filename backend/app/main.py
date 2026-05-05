@@ -14,6 +14,7 @@ from app.api.ranking import router as ranking_router
 from app.api.ticker import router as ticker_router
 from app.api.admin import router as admin_router
 from app.api.trades import router as trades_router
+from app.api.signals import router as signals_router
 
 setup_logging()
 log = get_logger(__name__)
@@ -71,3 +72,4 @@ app.include_router(ranking_router)
 app.include_router(ticker_router)
 app.include_router(admin_router)
 app.include_router(trades_router)
+app.include_router(signals_router)

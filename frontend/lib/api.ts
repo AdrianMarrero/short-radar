@@ -10,6 +10,7 @@ import type {
   TradeCloseIn,
   TradeOut,
   TradeStatsOut,
+  SignalStatsOut,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -147,6 +148,8 @@ export const deleteTrade = (id: number) =>
   apiDelete<{ status: string; id: number }>(`/api/trades/${id}`);
 
 export const getTradeStats = () => apiGet<TradeStatsOut>(`/api/trades/stats`);
+
+export const getSignalStats = () => apiGet<SignalStatsOut>(`/api/signals/stats`);
 
 export interface RefreshTradePricesOut {
   trades: TradeOut[];

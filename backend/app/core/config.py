@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # Universe sizing (per-market cap to keep free-tier execution under time limits)
     max_tickers_per_market: int = Field(default=80, alias="MAX_TICKERS_PER_MARKET")
 
+    # Position sizing (per-signal). Risk-per-trade as fraction of capital.
+    default_capital_eur: float = Field(default=2000.0, alias="DEFAULT_CAPITAL_EUR")
+    risk_per_trade_pct: float = Field(default=0.01, alias="RISK_PER_TRADE_PCT")
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

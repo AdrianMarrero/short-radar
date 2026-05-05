@@ -25,8 +25,13 @@ from typing import Iterable, Optional
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.collectors.universe import MARKETS, all_tickers
-from app.collectors.market_data import fetch_history, fetch_info, fetch_news_yf
+from app.collectors.universe import DELISTED_TICKERS, MARKETS, all_tickers
+from app.collectors.market_data import (
+    fetch_history,
+    fetch_info_cached,
+    fetch_news_yf,
+    fetch_insider_transactions,
+)
 from app.collectors.macro import fetch_macro_news, classify_macro_item
 from app.collectors.sentiment import analyze_news
 from app.core.config import get_settings
@@ -34,10 +39,11 @@ from app.core.database import session_scope
 from app.core.logging import get_logger
 from app.models import (
     Instrument, PriceDaily, TechnicalIndicators, NewsItem, Fundamentals,
-    ShortData, MacroEvent, ShortScore, JobRun,
+    ShortData, MacroEvent, ShortScore, JobRun, Signal,
 )
 from app.scoring.engine import compute_final_score
 from app.scoring.technicals import compute_technical_snapshot
+from app.scoring.edge_factors import detect_macro_regime
 from app.services.llm import explain
 
 settings = get_settings()
@@ -194,6 +200,15 @@ def upsert_company_data(db: Session, instrument: Instrument, info, today: DateTy
     fund.cash = info.total_cash
     fund.eps = info.eps
     fund.pe = info.pe
+    # v3 edge-factor columns
+    fund.target_mean_price = getattr(info, "target_mean_price", None)
+    fund.target_high_price = getattr(info, "target_high_price", None)
+    fund.target_low_price = getattr(info, "target_low_price", None)
+    fund.recommendation_mean = getattr(info, "recommendation_mean", None)
+    fund.num_analyst_opinions = getattr(info, "num_analyst_opinions", None)
+    fund.earnings_growth_quarterly = getattr(info, "earnings_growth_quarterly", None)
+    fund.earnings_growth_yoy = getattr(info, "earnings_growth_yoy", None)
+    fund.revenue_growth = getattr(info, "revenue_growth", None)
 
     # Short data
     short = (
@@ -285,21 +300,221 @@ def upsert_score(db: Session, instrument_id: int, fs, today: DateType, llm_text:
     existing.invalidation_reason = fs.trade_plan.invalidation
     existing.llm_explanation = llm_text
     existing.signals_json = json.dumps(fs.to_dict(), default=str)
+    # v2 — flat, frontend-ready bundle. PG stores native JSON; SQLite stores TEXT.
+    raw = getattr(fs, "raw_score_data", None)
+    if raw is None:
+        raw = {}
+    # SQLite needs a JSON-serializable dict regardless; SQLAlchemy JSON
+    # type handles dict serialization on both backends transparently.
+    existing.raw_score_data = raw
+
+
+# ---------------- Signal tracker (paper backtest) ----------------
+
+# Default fallback if FinalScore.horizon doesn't yield a sensible day count.
+DEFAULT_HORIZON_DAYS = 30
+# Hard cap for "expired": never let an unresolved signal sit open forever.
+MAX_SIGNAL_AGE_DAYS = 60
+# Dedupe: skip inserting a new Signal if the same instrument has an open
+# signal generated within this many days (prevents flooding when the same
+# name keeps showing up day after day).
+SIGNAL_DEDUPE_DAYS = 3
+
+
+def _horizon_days_for(fs) -> int:
+    """Map FinalScore.horizon to a numeric day count for expiry."""
+    h = (getattr(fs, "horizon", "") or "").lower()
+    if h == "intraday":
+        return 5
+    if h == "swing":
+        return 30
+    if h == "positional":
+        return 60
+    return DEFAULT_HORIZON_DAYS
+
+
+def insert_signal_for_score(db: Session, instrument_id: int, fs, today: DateType) -> bool:
+    """Persist a Signal for a NON-REJECTED score, with simple dedupe.
+
+    Returns True if a new Signal row was inserted, False if it was deduped.
+    Dedupe rule: skip if the same instrument already has an OPEN signal
+    generated within ``SIGNAL_DEDUPE_DAYS``.
+    """
+    if getattr(fs, "rejected", False):
+        return False
+
+    plan = fs.trade_plan
+    if plan is None or plan.entry is None or plan.stop is None:
+        return False
+
+    cutoff = today - timedelta(days=SIGNAL_DEDUPE_DAYS)
+    recent_open = (
+        db.query(Signal)
+        .filter(Signal.instrument_id == instrument_id)
+        .filter(Signal.status == "open")
+        .filter(Signal.date_generated >= cutoff)
+        .first()
+    )
+    if recent_open is not None:
+        return False
+
+    sig = Signal(
+        instrument_id=instrument_id,
+        date_generated=today,
+        tier=getattr(fs, "tier", None),
+        category=getattr(fs, "category", None),
+        setup_type=fs.setup_type,
+        total_score=float(fs.total or 0.0),
+        entry=plan.entry,
+        stop=plan.stop,
+        target_1=plan.target_1,
+        target_2=plan.target_2,
+        horizon_days=_horizon_days_for(fs),
+        factor_scores=dict(getattr(fs, "factor_scores", {}) or {}),
+        multipliers=dict(getattr(fs, "multipliers", {}) or {}),
+        status="open",
+    )
+    db.add(sig)
+    return True
+
+
+def close_open_signals(db: Session, today: DateType) -> dict[str, int]:
+    """Walk open signals, replay PriceDaily bars, resolve outcomes.
+
+    Per signal logic, in order:
+      1. low <= stop          -> hit_stop
+      2. high >= target_2     -> hit_target_2 (if target_2 set)
+      3. high >= target_1     -> hit_target_1 (if target_1 set)
+      4. days_open >= horizon -> expired (exit at last close)
+
+    Note: this is a simple bar-replay, not tick-level. Same-bar stop+target
+    is resolved AS STOP first (conservative). Returns a counters dict.
+    """
+    counters = {"hit_stop": 0, "hit_target_1": 0, "hit_target_2": 0, "expired": 0, "still_open": 0}
+
+    open_sigs = db.query(Signal).filter(Signal.status == "open").all()
+    if not open_sigs:
+        return counters
+
+    for sig in open_sigs:
+        bars = (
+            db.query(PriceDaily)
+            .filter(PriceDaily.instrument_id == sig.instrument_id)
+            .filter(PriceDaily.date > sig.date_generated)
+            .order_by(PriceDaily.date.asc())
+            .all()
+        )
+
+        resolved = False
+        max_age = sig.horizon_days or MAX_SIGNAL_AGE_DAYS
+        max_age = min(int(max_age), MAX_SIGNAL_AGE_DAYS)
+
+        for bar in bars:
+            low = float(bar.low) if bar.low is not None else None
+            high = float(bar.high) if bar.high is not None else None
+            close = float(bar.close) if bar.close is not None else None
+
+            # 1. Stop hit (conservative — same-bar tie goes to stop)
+            if low is not None and sig.stop is not None and low <= sig.stop:
+                sig.status = "hit_stop"
+                sig.exit_price = float(sig.stop)
+                sig.exit_date = bar.date
+                sig.days_held = max((bar.date - sig.date_generated).days, 0)
+                if sig.entry and sig.entry > 0:
+                    sig.pnl_pct = round((sig.exit_price - sig.entry) / sig.entry * 100.0, 4)
+                counters["hit_stop"] += 1
+                resolved = True
+                break
+
+            # 2. Target 2
+            if (
+                high is not None
+                and sig.target_2 is not None
+                and high >= sig.target_2
+            ):
+                sig.status = "hit_target_2"
+                sig.exit_price = float(sig.target_2)
+                sig.exit_date = bar.date
+                sig.days_held = max((bar.date - sig.date_generated).days, 0)
+                if sig.entry and sig.entry > 0:
+                    sig.pnl_pct = round((sig.exit_price - sig.entry) / sig.entry * 100.0, 4)
+                counters["hit_target_2"] += 1
+                resolved = True
+                break
+
+            # 3. Target 1
+            if (
+                high is not None
+                and sig.target_1 is not None
+                and high >= sig.target_1
+            ):
+                sig.status = "hit_target_1"
+                sig.exit_price = float(sig.target_1)
+                sig.exit_date = bar.date
+                sig.days_held = max((bar.date - sig.date_generated).days, 0)
+                if sig.entry and sig.entry > 0:
+                    sig.pnl_pct = round((sig.exit_price - sig.entry) / sig.entry * 100.0, 4)
+                counters["hit_target_1"] += 1
+                resolved = True
+                break
+
+        if resolved:
+            continue
+
+        # 4. Expired? (only checked if no target/stop hit during the window)
+        age_days = (today - sig.date_generated).days
+        if age_days >= max_age:
+            # Use the last available close as exit price; if no bars, fall back
+            # to entry to mark a 0% return rather than NULL.
+            last_close = None
+            last_date = None
+            if bars:
+                last = bars[-1]
+                last_close = float(last.close) if last.close is not None else None
+                last_date = last.date
+            sig.status = "expired"
+            sig.exit_price = last_close if last_close is not None else sig.entry
+            sig.exit_date = last_date or today
+            sig.days_held = max((sig.exit_date - sig.date_generated).days, 0) if sig.exit_date else age_days
+            if sig.entry and sig.entry > 0 and sig.exit_price is not None:
+                sig.pnl_pct = round((sig.exit_price - sig.entry) / sig.entry * 100.0, 4)
+            counters["expired"] += 1
+        else:
+            counters["still_open"] += 1
+
+    return counters
 
 
 # ---------------- Main entry points ----------------
 
-def process_ticker(db: Session, instrument: Instrument, macro_events: list, today: DateType) -> bool:
-    """Process a single ticker. Returns True if a score was generated."""
+def process_ticker(
+    db: Session,
+    instrument: Instrument,
+    macro_events: list,
+    today: DateType,
+    *,
+    macro_regime: Optional[dict] = None,
+) -> str:
+    """Process a single ticker.
+
+    Returns one of: 'scored' (passed gates, persisted), 'rejected'
+    (failed gates — still persisted so the row is visible with tier=D
+    and warnings explaining why), or 'skipped' (no usable data).
+
+    ``macro_regime`` is the result of edge_factors.detect_macro_regime()
+    computed ONCE per daily run and forwarded to every ticker so the
+    regime tilt can be applied as a multiplier without re-fetching the
+    macro indices per ticker.
+    """
     df = fetch_history(instrument.ticker, period="1y")
     if df is None or df.empty:
-        return False
+        return "skipped"
 
     snap = compute_technical_snapshot(df)
     if snap is None:
-        return False
+        return "skipped"
 
-    info = fetch_info(instrument.ticker)
+    info = fetch_info_cached(db, instrument)
     upsert_prices(db, instrument.id, df)
     upsert_technicals(db, instrument.id, snap, today)
     upsert_company_data(db, instrument, info, today)
@@ -309,12 +524,47 @@ def process_ticker(db: Session, instrument: Instrument, macro_events: list, toda
     db.flush()  # garantizar IDs antes de query
     recent = recent_news_for(db, instrument.id, days=14)
 
-    fs = compute_final_score(snap, recent, info, macro_events, avg_volume=avg_volume_for(df))
+    # v3 edge-factor inputs ----------------------------------------------------
+    # Insider transactions: best-effort, may be None for many tickers.
+    insider_df = fetch_insider_transactions(instrument.ticker)
 
-    # Solo invocar LLM para scores relevantes (ahorra tokens)
+    # Short-interest history (~last 60 days) for delta computation.
+    short_cutoff = today - timedelta(days=60)
+    short_rows = (
+        db.query(ShortData)
+        .filter(ShortData.instrument_id == instrument.id)
+        .filter(ShortData.date >= short_cutoff)
+        .order_by(ShortData.date.asc())
+        .all()
+    )
+
+    fs = compute_final_score(
+        snap,
+        recent,
+        info,
+        macro_events,
+        avg_volume=avg_volume_for(df),
+        insider_df=insider_df,
+        short_rows=short_rows,
+        macro_regime=macro_regime,
+    )
+
+    if getattr(fs, "rejected", False):
+        # Persist as a zero-score row so the universe stays observable
+        # (the user can see why a name was filtered out via raw_score_data).
+        upsert_score(db, instrument.id, fs, today, "")
+        return "rejected"
+
+    # Only invoke LLM for relevant scores (saves tokens)
     llm_text = explain(instrument.ticker, instrument.name or instrument.ticker, fs) if fs.total >= 55 else ""
     upsert_score(db, instrument.id, fs, today, llm_text)
-    return True
+    # Paper backtest: persist a Signal row for every NON-REJECTED score
+    # (with dedupe inside insert_signal_for_score).
+    try:
+        insert_signal_for_score(db, instrument.id, fs, today)
+    except Exception as e:  # noqa: BLE001
+        log.warning("signal insert skipped for %s: %s", instrument.ticker, e)
+    return "scored"
 
 
 def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> dict:
@@ -335,9 +585,44 @@ def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> 
 
     instruments_processed = 0
     scores_generated = 0
+    scores_rejected = 0
     error_msg = ""
 
+    # v3: detect macro regime ONCE for the whole run. Lenient by design —
+    # any failure returns the neutral 'mixed' regime with all tilts = 1.0,
+    # which means the regime multiplier is a no-op.
+    macro_regime: dict = {}
     try:
+        macro_regime = detect_macro_regime()
+        log.info(
+            "macro regime: %s (vix=%s, slope=%s, dxy_30d=%s, spx>50d=%s, spx>200d=%s)",
+            macro_regime.get("regime"),
+            macro_regime.get("vix"),
+            macro_regime.get("yield_curve_slope_pct"),
+            macro_regime.get("dxy_change_30d_pct"),
+            macro_regime.get("spx_above_50d"),
+            macro_regime.get("spx_above_200d"),
+        )
+    except Exception as e:
+        log.warning("macro regime detection failed: %s — defaulting to mixed", e)
+        macro_regime = {"regime": "mixed", "tilt": {}}
+
+    try:
+        # Close open signals BEFORE generating new ones — gives today's
+        # fresh signals a clean slate and ensures stats reflect the latest
+        # bar replays.
+        try:
+            with session_scope() as db:
+                counters = close_open_signals(db, today)
+                log.info(
+                    "signal closer: stop=%d t1=%d t2=%d expired=%d still_open=%d",
+                    counters["hit_stop"], counters["hit_target_1"],
+                    counters["hit_target_2"], counters["expired"],
+                    counters["still_open"],
+                )
+        except Exception as e:  # noqa: BLE001
+            log.warning("signal closer failed (continuing): %s", e)
+
         with session_scope() as db:
             ensure_instruments(db)
             macro_events = collect_macro(db)
@@ -355,14 +640,19 @@ def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> 
             macro_events = db.query(MacroEvent).filter(MacroEvent.date >= today - timedelta(days=14)).all()
 
         for inst_id, ticker in all_inst:
+            if ticker in DELISTED_TICKERS:
+                continue
             try:
                 with session_scope() as db:
                     inst = db.get(Instrument, inst_id)
                     if not inst:
                         continue
                     macro_events = db.query(MacroEvent).filter(MacroEvent.date >= today - timedelta(days=14)).all()
-                    if process_ticker(db, inst, macro_events, today):
+                    result = process_ticker(db, inst, macro_events, today, macro_regime=macro_regime)
+                    if result == "scored":
                         scores_generated += 1
+                    elif result == "rejected":
+                        scores_rejected += 1
                     instruments_processed += 1
             except Exception as e:
                 log.exception("error processing %s: %s", ticker, e)
@@ -384,10 +674,12 @@ def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> 
             run.error = error_msg
 
     log.info(
-        "daily job finished in %.1fs: %d instruments, %d scores",
+        "daily job finished in %.1fs: total=%d scored=%d rejected=%d skipped=%d",
         (finished - started).total_seconds(),
         instruments_processed,
         scores_generated,
+        scores_rejected,
+        max(0, instruments_processed - scores_generated - scores_rejected),
     )
 
     return {
@@ -395,6 +687,7 @@ def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> 
         "status": "error" if error_msg else "ok",
         "instruments_processed": instruments_processed,
         "scores_generated": scores_generated,
+        "scores_rejected": scores_rejected,
         "elapsed_seconds": (finished - started).total_seconds(),
         "error": error_msg,
     }

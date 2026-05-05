@@ -7,10 +7,12 @@ import {
   deleteTrade,
   getTrades,
   getTradeStats,
+  getSignalStats,
   refreshTradePrices,
 } from "@/lib/api";
-import type { TradeOut, TradeStatsOut, TradeStatus } from "@/lib/types";
+import type { TradeOut, TradeStatsOut, TradeStatus, SignalStatsOut } from "@/lib/types";
 import { fmtNum, fmtPct, fmtDate, changeColor } from "@/lib/format";
+import { YahooLink } from "@/components/YahooLink";
 
 type Tab = "open" | "closed" | "stats";
 
@@ -18,6 +20,7 @@ export default function JournalPage() {
   const [tab, setTab] = useState<Tab>("open");
   const [trades, setTrades] = useState<TradeOut[]>([]);
   const [stats, setStats] = useState<TradeStatsOut | null>(null);
+  const [signalStats, setSignalStats] = useState<SignalStatsOut | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -28,9 +31,14 @@ export default function JournalPage() {
     setLoading(true);
     setError(null);
     try {
-      const [list, s] = await Promise.all([getTrades("all"), getTradeStats()]);
+      const [list, s, ss] = await Promise.all([
+        getTrades("all"),
+        getTradeStats(),
+        getSignalStats().catch(() => null),
+      ]);
       setTrades(list);
       setStats(s);
+      setSignalStats(ss);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -144,7 +152,7 @@ export default function JournalPage() {
       ) : tab === "closed" ? (
         <ClosedTrades trades={closed} onChanged={refresh} />
       ) : (
-        <StatsTab stats={stats} />
+        <StatsTab stats={stats} signalStats={signalStats} />
       )}
     </div>
   );
@@ -235,6 +243,7 @@ function OpenRow({
             >
               {trade.ticker}
             </Link>
+            <YahooLink ticker={trade.ticker} />
             <ProfileBadge profile={trade.profile} />
           </div>
         </div>
@@ -529,12 +538,15 @@ function ClosedRow({
   return (
     <tr className="border-t border-ink/10 hover:bg-paper-deep/50">
       <Td>
-        <Link
-          href={`/ticker/${encodeURIComponent(trade.ticker)}`}
-          className="font-bold hover:text-bull"
-        >
-          {trade.ticker}
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/ticker/${encodeURIComponent(trade.ticker)}`}
+            className="font-bold hover:text-bull"
+          >
+            {trade.ticker}
+          </Link>
+          <YahooLink ticker={trade.ticker} />
+        </div>
       </Td>
       <Td>
         <span className="text-xs uppercase tracking-wider font-mono">
@@ -587,16 +599,25 @@ function ClosedRow({
 
 // -------------------------------------------------------------- Stats
 
-function StatsTab({ stats }: { stats: TradeStatsOut | null }) {
+function StatsTab({
+  stats,
+  signalStats,
+}: {
+  stats: TradeStatsOut | null;
+  signalStats: SignalStatsOut | null;
+}) {
   if (!stats) return null;
 
   if (stats.total === 0) {
     return (
-      <div className="border border-ink/15 p-12 text-center">
-        <p className="display-heading text-2xl mb-2">Aún no hay datos</p>
-        <p className="text-ink-light">
-          Las estadísticas aparecerán cuando registres operaciones.
-        </p>
+      <div className="space-y-8">
+        <div className="border border-ink/15 p-12 text-center">
+          <p className="display-heading text-2xl mb-2">Aún no hay operaciones</p>
+          <p className="text-ink-light">
+            Las estadísticas de tu diario aparecerán cuando registres operaciones.
+          </p>
+        </div>
+        <SignalBacktestSection signalStats={signalStats} />
       </div>
     );
   }
@@ -645,6 +666,8 @@ function StatsTab({ stats }: { stats: TradeStatsOut | null }) {
         <BucketTable title="Por setup" buckets={stats.by_setup} />
         <BucketTable title="Por perfil" buckets={stats.by_profile} />
       </section>
+
+      <SignalBacktestSection signalStats={signalStats} />
     </div>
   );
 }
@@ -825,5 +848,119 @@ function StatusBadge({ status }: { status: TradeStatus }) {
     >
       {label}
     </span>
+  );
+}
+
+// -------------------------------------------------------------- Signal backtest
+
+function SignalBacktestSection({ signalStats }: { signalStats: SignalStatsOut | null }) {
+  if (!signalStats || signalStats.total === 0) {
+    return (
+      <section className="border border-ink/15 p-6">
+        <h3 className="display-heading text-2xl mb-1">Backtest de señales</h3>
+        <p className="text-sm text-ink-muted">
+          Aún no hay señales cerradas. El sistema empieza a registrar todas las señales generadas;
+          van a aparecer aquí en cuanto toquen stop, target o expiren.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h3 className="display-heading text-2xl">Backtest de señales</h3>
+        <p className="text-xs text-ink-muted mt-1">
+          Performance hipotética de TODAS las señales generadas (operes o no), cerradas contra precio histórico.
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <BigStat label="Total" value={signalStats.total.toString()} />
+        <BigStat label="Abiertas" value={signalStats.open.toString()} />
+        <BigStat label="Cerradas" value={signalStats.closed.toString()} />
+        <BigStat
+          label="Win rate"
+          value={`${signalStats.win_rate_pct.toFixed(0)}%`}
+          accent={signalStats.win_rate_pct >= 50 ? "bull" : "bear"}
+        />
+        <BigStat
+          label="Retorno medio"
+          value={fmtPct(signalStats.avg_return_pct)}
+          accent={signalStats.avg_return_pct >= 0 ? "bull" : "bear"}
+        />
+        <BigStat
+          label="Expectancy"
+          value={fmtPct(signalStats.expectancy)}
+          accent={signalStats.expectancy >= 0 ? "bull" : "bear"}
+        />
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-6">
+        <SignalBucketTable title="Por tier" buckets={signalStats.by_tier} />
+        <SignalBucketTable title="Por categoría" buckets={signalStats.by_category} />
+        <SignalBucketTable title="Por setup" buckets={signalStats.by_setup_type} />
+      </div>
+    </section>
+  );
+}
+
+function SignalBucketTable({
+  title,
+  buckets,
+}: {
+  title: string;
+  buckets: Record<
+    string,
+    { n: number; n_closed: number; win_rate_pct: number; avg_return_pct: number; expectancy: number }
+  >;
+}) {
+  const entries = Object.entries(buckets).sort((a, b) => b[1].n - a[1].n);
+  if (entries.length === 0) {
+    return (
+      <div className="border border-ink/15 p-4">
+        <h4 className="display-heading text-xl mb-2">{title}</h4>
+        <p className="text-sm text-ink-muted">Sin datos.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="border border-ink/15">
+      <h4 className="display-heading text-xl px-4 pt-4 pb-2">{title}</h4>
+      <table className="w-full text-sm">
+        <thead className="bg-paper-deep">
+          <tr className="text-[10px] uppercase tracking-widest font-mono text-ink-muted">
+            <Th>Categoría</Th>
+            <Th align="right">N</Th>
+            <Th align="right">Win %</Th>
+            <Th align="right">Ret. medio</Th>
+            <Th align="right">Expectancy</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map(([k, b]) => (
+            <tr key={k} className="border-t border-ink/10">
+              <Td>
+                <span className="capitalize">{k.replace("_", " ")}</span>
+              </Td>
+              <Td align="right" mono>
+                {b.n_closed}/{b.n}
+              </Td>
+              <Td align="right" mono>{b.win_rate_pct.toFixed(0)}%</Td>
+              <Td align="right" mono>
+                <span className={changeColor(b.avg_return_pct)}>
+                  {fmtPct(b.avg_return_pct)}
+                </span>
+              </Td>
+              <Td align="right" mono>
+                <span className={changeColor(b.expectancy)}>
+                  {fmtPct(b.expectancy)}
+                </span>
+              </Td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

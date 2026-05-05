@@ -50,6 +50,18 @@ class Fundamentals(Base):
     ev_sales: Mapped[float | None] = mapped_column(Float, nullable=True)
     ev_ebitda: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # v3 edge factors: analyst targets + earnings revisions
+    target_mean_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_high_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_low_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recommendation_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    num_analyst_opinions: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_growth_quarterly: Mapped[float | None] = mapped_column(Float, nullable=True)
+    earnings_growth_yoy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    revenue_growth: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class ShortData(Base):
     __tablename__ = "short_data"

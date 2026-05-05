@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, date as DateType
-from sqlalchemy import String, Text, Float, DateTime, Date, Integer, ForeignKey, Index, Boolean
+from sqlalchemy import String, Text, Float, DateTime, Date, Integer, ForeignKey, Index, Boolean, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -40,6 +40,11 @@ class ShortScore(Base):
     llm_explanation: Mapped[str] = mapped_column(Text, default="")
     # JSON serializado con los componentes que dispararon el score
     signals_json: Mapped[str] = mapped_column(Text, default="{}")
+
+    # v2 redesign: tier/category/factor_scores/multipliers/warnings/explanation
+    # Stored as JSON (PG: native JSON, SQLite: TEXT) — see core.database
+    # _ensure_short_score_columns() for the bootstrap migration.
+    raw_score_data: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class Alert(Base):

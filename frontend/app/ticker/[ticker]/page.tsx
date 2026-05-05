@@ -3,9 +3,11 @@ import Link from "next/link";
 import { getTicker } from "@/lib/api";
 import { PriceChart } from "@/components/PriceChart";
 import { ScoreBars } from "@/components/ScoreBars";
-import { SetupBadge, ConvictionBadge } from "@/components/Badges";
+import { SetupBadge, ConvictionBadge, TierBadge, WarningChips } from "@/components/Badges";
 import { PositionSizer } from "@/components/PositionSizer";
 import { TradeIdeaForm } from "@/components/TradeIdeaForm";
+import { YahooLink } from "@/components/YahooLink";
+import { ProbabilityBox } from "@/components/ProbabilityBox";
 import {
   fmtNum, fmtPct, fmtMoney, fmtRelativeTime, scoreColor, changeColor,
   horizonLabel,
@@ -39,6 +41,7 @@ export default async function TickerPage({ params }: { params: { ticker: string 
             <span className="text-xs uppercase tracking-widest font-mono text-ink-muted border border-ink/30 px-2 py-0.5">
               {instrument.exchange}
             </span>
+            <YahooLink ticker={instrument.ticker} label="Ver en Yahoo" />
           </div>
           <div className="text-xl text-ink-light">{instrument.name}</div>
           <div className="text-sm text-ink-muted mt-1">
@@ -75,17 +78,42 @@ export default async function TickerPage({ params }: { params: { ticker: string 
         <section className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 border border-ink/15 p-5">
             <div className="flex items-center gap-3 mb-4 flex-wrap">
+              {score.tier && <TierBadge tier={score.tier} />}
               <SetupBadge setup={score.setup_type} />
               <span className="text-xs uppercase tracking-widest font-mono text-ink-muted">·</span>
               <span className="text-xs uppercase tracking-widest font-mono">{horizonLabel(score.horizon)}</span>
               <span className="text-xs uppercase tracking-widest font-mono text-ink-muted">·</span>
               <ConvictionBadge conviction={score.conviction} />
+              {score.category && (
+                <>
+                  <span className="text-xs uppercase tracking-widest font-mono text-ink-muted">·</span>
+                  <span className="text-xs uppercase tracking-widest font-mono text-ink-muted">
+                    {score.category.replace("_", " ")}
+                  </span>
+                </>
+              )}
             </div>
 
-            <h3 className="display-heading text-xl mb-2">Tesis</h3>
+            <WarningChips warnings={score.warnings} />
+
+            <h3 className="display-heading text-xl mb-2 mt-4">Tesis</h3>
             <p className="text-base leading-relaxed text-ink-light whitespace-pre-line">
               {explanation || "Sin explicación generada."}
             </p>
+
+            {score.explanation && score.explanation.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-ink/10">
+                <h4 className="display-heading text-base mb-2">¿Por qué?</h4>
+                <ul className="space-y-1.5 text-sm text-ink-light">
+                  {score.explanation.map((b, i) => (
+                    <li key={i} className="flex gap-2">
+                      <span className="text-ink-muted">·</span>
+                      <span className="leading-snug">{b}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
 
           <div className="border border-ink/15 p-5">
@@ -122,6 +150,20 @@ export default async function TickerPage({ params }: { params: { ticker: string 
           target={score?.target_2}
         />
       </section>
+
+      {/* Probabilistic display layer */}
+      {score && score.prob_target_1 != null && (
+        <section>
+          <ProbabilityBox
+            probTarget1={score.prob_target_1}
+            probTarget2={score.prob_target_2}
+            probStop={score.prob_stop}
+            probExpire={score.prob_expire}
+            expectedR={score.expected_r}
+            edgeClass={score.edge_class}
+          />
+        </section>
+      )}
 
       {/* Score breakdown + Position sizer */}
       <section className="grid lg:grid-cols-2 gap-6">

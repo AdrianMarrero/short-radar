@@ -6,14 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.api.ranking import _sanitize_floats
+from app.api.ranking import _sanitize_floats, _row_to_score_out
 from app.core.database import get_db
 from app.models import (
     Instrument, ShortScore, TechnicalIndicators, Fundamentals,
     ShortData, NewsItem, PriceDaily,
 )
 from app.api.schemas import (
-    TickerDetailOut, InstrumentOut, ScoreOut, TechnicalsOut,
+    TickerDetailOut, InstrumentOut, TechnicalsOut,
     FundamentalsOut, ShortDataOut, NewsItemOut, PriceOut,
 )
 
@@ -76,32 +76,10 @@ def get_ticker_detail(ticker: str, db: Session = Depends(get_db)):
 
     score_out = None
     if score:
-        score_out = ScoreOut(
-            instrument_id=inst.id,
-            ticker=inst.ticker,
-            name=inst.name or inst.ticker,
-            exchange=inst.exchange,
-            sector=inst.sector or "",
-            last_close=last_close,
-            change_1d=tech.change_1d if tech else None,
-            change_5d=tech.change_5d if tech else None,
-            change_1m=tech.change_1m if tech else None,
-            total_score=score.total_score,
-            technical_score=score.technical_score,
-            news_score=score.news_score,
-            fundamental_score=score.fundamental_score,
-            macro_score=score.macro_score,
-            squeeze_risk_score=score.squeeze_risk_score,
-            liquidity_score=score.liquidity_score,
-            setup_type=score.setup_type,
-            conviction=score.conviction,
-            horizon=score.horizon,
-            entry_price=score.entry_price,
-            stop_price=score.stop_price,
-            target_1=score.target_1,
-            target_2=score.target_2,
-            invalidation_reason=score.invalidation_reason or "",
-        )
+        # Reuse the ranking hydrator so v2 fields + probabilistic layer
+        # are populated consistently (single source of truth).
+        score_out = _row_to_score_out(score, inst, tech)
+        score_out.last_close = last_close
 
     detail = TickerDetailOut(
         instrument=InstrumentOut.model_validate(inst),

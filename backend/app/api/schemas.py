@@ -114,6 +114,30 @@ class ScoreOut(BaseModel):
     target_2: Optional[float]
     invalidation_reason: str
 
+    # v2 redesign — additive fields. Always optional for backward
+    # compatibility with legacy rows where raw_score_data is None.
+    tier: Optional[str] = None
+    category: Optional[str] = None
+    factor_scores: Optional[dict[str, float]] = None
+    multipliers: Optional[dict[str, float]] = None
+    warnings: list[str] = []
+    explanation: list[str] = []
+    entry_zone_status: Optional[str] = None
+    extension_status: Optional[str] = None
+    perf_1m_pct: Optional[float] = None
+    # Position sizing — computed per-signal in the engine, hydrated from raw_score_data.
+    position_size_eur: Optional[float] = None
+    shares: Optional[int] = None
+
+    # Probabilistic display layer (Monte Carlo). All optional — populated
+    # only when realized volatility is available for the instrument.
+    prob_target_1: Optional[float] = None
+    prob_target_2: Optional[float] = None
+    prob_stop: Optional[float] = None
+    prob_expire: Optional[float] = None
+    expected_r: Optional[float] = None
+    edge_class: Optional[str] = None
+
 
 class TickerDetailOut(BaseModel):
     instrument: InstrumentOut
@@ -266,3 +290,26 @@ class TradeStatsOut(BaseModel):
     worst_trade_ticker: Optional[str]
     by_setup: dict[str, TradeStatsBucket]
     by_profile: dict[str, TradeStatsBucket]
+
+
+# -------- Signals (paper backtest) --------
+
+
+class SignalStatsBucket(BaseModel):
+    n: int
+    n_closed: int
+    win_rate_pct: float
+    avg_return_pct: float
+    expectancy: float
+
+
+class SignalStatsOut(BaseModel):
+    total: int
+    open: int
+    closed: int
+    win_rate_pct: float
+    avg_return_pct: float
+    expectancy: float
+    by_tier: dict[str, SignalStatsBucket]
+    by_category: dict[str, SignalStatsBucket]
+    by_setup_type: dict[str, SignalStatsBucket]

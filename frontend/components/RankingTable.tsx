@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { ScoreOut } from "@/lib/types";
 import { fmtMoney, fmtPct, scoreColor, changeColor } from "@/lib/format";
-import { SetupBadge, ConvictionBadge } from "./Badges";
+import { SetupBadge, ConvictionBadge, TierBadge, WarningChips } from "./Badges";
 
 export function RankingTable({ rows }: { rows: ScoreOut[] }) {
   if (!rows.length) {
@@ -20,6 +20,7 @@ export function RankingTable({ rows }: { rows: ScoreOut[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-ink/15 text-[11px] uppercase tracking-widest text-ink-muted">
+            <th className="text-left px-3 py-3 font-medium">Tier</th>
             <th className="text-left px-4 py-3 font-medium">#</th>
             <th className="text-left px-4 py-3 font-medium">Ticker</th>
             <th className="text-left px-4 py-3 font-medium">Nombre</th>
@@ -39,6 +40,7 @@ export function RankingTable({ rows }: { rows: ScoreOut[] }) {
               key={r.instrument_id}
               className="border-b border-ink/5 hover:bg-paper-deep/40 transition-colors"
             >
+              <td className="px-3 py-3"><TierBadge tier={r.tier} /></td>
               <td className="px-4 py-3 text-ink-muted font-mono tnum">{i + 1}</td>
               <td className="px-4 py-3">
                 <Link
@@ -50,6 +52,7 @@ export function RankingTable({ rows }: { rows: ScoreOut[] }) {
                 <div className="text-[10px] uppercase tracking-wider text-ink-muted font-mono">
                   {r.exchange}
                 </div>
+                <WarningChips warnings={r.warnings} />
               </td>
               <td className="px-4 py-3 max-w-[260px]">
                 <div className="truncate">{r.name}</div>

@@ -8,12 +8,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, date as DateType, timedelta
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import pandas as pd
 import yfinance as yf
 
 from app.core.logging import get_logger
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+    from app.models.instrument import Instrument
+
+INFO_CACHE_TTL_DAYS = 7
 
 log = get_logger(__name__)
 
@@ -51,6 +57,16 @@ class InstrumentInfo:
     total_debt: Optional[float]
     total_cash: Optional[float]
     eps: Optional[float]
+    # v3 edge factors — analyst price targets
+    target_mean_price: Optional[float] = None
+    target_high_price: Optional[float] = None
+    target_low_price: Optional[float] = None
+    recommendation_mean: Optional[float] = None
+    num_analyst_opinions: Optional[float] = None
+    # v3 edge factors — earnings revisions / growth signals
+    earnings_growth_quarterly: Optional[float] = None
+    earnings_growth_yoy: Optional[float] = None
+    revenue_growth: Optional[float] = None
 
 
 def _ticker(symbol: str) -> yf.Ticker:
@@ -115,7 +131,87 @@ def fetch_info(ticker: str) -> Optional[InstrumentInfo]:
         total_debt=f("totalDebt"),
         total_cash=f("totalCash"),
         eps=f("trailingEps"),
+        target_mean_price=f("targetMeanPrice"),
+        target_high_price=f("targetHighPrice"),
+        target_low_price=f("targetLowPrice"),
+        recommendation_mean=f("recommendationMean"),
+        num_analyst_opinions=f("numberOfAnalystOpinions"),
+        earnings_growth_quarterly=f("earningsQuarterlyGrowth"),
+        earnings_growth_yoy=f("earningsGrowth"),
+        revenue_growth=f("revenueGrowth"),
     )
+
+
+def _info_from_cache(instrument: "Instrument", fund, short) -> InstrumentInfo:
+    return InstrumentInfo(
+        ticker=instrument.ticker,
+        name=instrument.name or instrument.ticker,
+        sector=instrument.sector or "",
+        industry=instrument.industry or "",
+        market_cap=instrument.market_cap,
+        currency=instrument.currency or "USD",
+        exchange=instrument.exchange or "",
+        shares_short=getattr(short, "short_interest", None) if short else None,
+        short_percent_of_float=getattr(short, "short_percent_float", None) if short else None,
+        short_ratio=getattr(short, "days_to_cover", None) if short else None,
+        float_shares=getattr(short, "float_shares", None) if short else None,
+        pe=getattr(fund, "pe", None),
+        revenue=getattr(fund, "revenue", None),
+        revenue_growth_yoy=getattr(fund, "revenue_growth_yoy", None),
+        gross_margin=getattr(fund, "gross_margin", None),
+        operating_margin=getattr(fund, "operating_margin", None),
+        free_cash_flow=getattr(fund, "free_cash_flow", None),
+        total_debt=getattr(fund, "debt", None),
+        total_cash=getattr(fund, "cash", None),
+        eps=getattr(fund, "eps", None),
+        target_mean_price=getattr(fund, "target_mean_price", None),
+        target_high_price=getattr(fund, "target_high_price", None),
+        target_low_price=getattr(fund, "target_low_price", None),
+        recommendation_mean=getattr(fund, "recommendation_mean", None),
+        num_analyst_opinions=getattr(fund, "num_analyst_opinions", None),
+        earnings_growth_quarterly=getattr(fund, "earnings_growth_quarterly", None),
+        earnings_growth_yoy=getattr(fund, "earnings_growth_yoy", None),
+        revenue_growth=getattr(fund, "revenue_growth", None),
+    )
+
+
+def fetch_info_cached(
+    db: "Session",
+    instrument: "Instrument",
+    ttl_days: int = INFO_CACHE_TTL_DAYS,
+) -> Optional[InstrumentInfo]:
+    """Return InstrumentInfo, hitting yfinance only if the cached Fundamentals
+    row is older than ``ttl_days``. Falls back to the stale cache if yfinance
+    is rate-limited.
+    """
+    from app.models import Fundamentals, ShortData
+
+    fund = (
+        db.query(Fundamentals)
+        .filter(Fundamentals.instrument_id == instrument.id)
+        .filter(Fundamentals.period == "TTM")
+        .first()
+    )
+    short = (
+        db.query(ShortData)
+        .filter(ShortData.instrument_id == instrument.id)
+        .order_by(ShortData.date.desc())
+        .first()
+    )
+
+    cutoff = datetime.utcnow() - timedelta(days=ttl_days)
+    fund_updated = getattr(fund, "updated_at", None) if fund else None
+    if fund and fund_updated and fund_updated >= cutoff:
+        return _info_from_cache(instrument, fund, short)
+
+    fresh = fetch_info(instrument.ticker)
+    if fresh is not None:
+        return fresh
+
+    if fund is not None:
+        log.info("yfinance info miss for %s — falling back to stale cache", instrument.ticker)
+        return _info_from_cache(instrument, fund, short)
+    return None
 
 
 def fetch_latest_price(ticker: str, timeout: float = 5.0) -> Optional[float]:
@@ -170,6 +266,46 @@ def fetch_latest_price(ticker: str, timeout: float = 5.0) -> Optional[float]:
     except Exception as e:
         log.warning("latest price fetch failed for %s: %s", ticker, e)
     return None
+
+
+def fetch_insider_transactions(ticker: str) -> Optional[pd.DataFrame]:
+    """Fetch insider transactions DataFrame for a ticker.
+
+    yfinance ``Ticker.insider_transactions`` returns a DataFrame with
+    columns like ``Insider``, ``Position``, ``Transaction``, ``Start Date``,
+    ``Value``, ``# of Shares``, ``Ownership``, ``URL``. May be None or
+    empty for many tickers (especially European ADRs / .L / .DE / .MC).
+
+    Robust to network failures and missing attribute (older yfinance).
+    Returns None on any error or empty result.
+    """
+    try:
+        t = _ticker(ticker)
+        df = getattr(t, "insider_transactions", None)
+        if df is None:
+            return None
+        # yfinance can return a property that fails internally — guard.
+        if not hasattr(df, "empty"):
+            return None
+        if df.empty:
+            return None
+        return df
+    except Exception as e:
+        log.debug("insider_transactions fetch failed for %s: %s", ticker, e)
+        return None
+
+
+def fetch_index_history(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
+    """Thin wrapper around fetch_history for macro-regime index symbols.
+
+    Identical to fetch_history but logs at debug level (these are best-
+    effort fetches and we degrade to a neutral macro regime on failure).
+    """
+    try:
+        return fetch_history(symbol, period=period)
+    except Exception as e:
+        log.debug("index history fetch failed for %s: %s", symbol, e)
+        return None
 
 
 def fetch_news_yf(ticker: str) -> list[dict]:

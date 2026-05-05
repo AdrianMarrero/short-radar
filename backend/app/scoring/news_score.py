@@ -1,12 +1,15 @@
 """News & catalysts score for LONG bias (0-100).
 
-Higher score = stronger positive catalyst environment.
-
-Critical concept for the AGGRESSIVE profile:
+CRITICAL CONCEPT (validated by user, do NOT change):
 We deliberately favor catalysts that are 3-10 days OLD over fresh ones.
-Reason: by the time retail reads a fresh headline, the move is already done.
-A catalyst that's 5-7 days old where price is still digesting (not exhausted)
-is where realistic edge exists for retail.
+Reason: by the time retail reads a fresh headline, the move is already
+done. A catalyst that's 5-7 days old where price is still digesting
+(not exhausted) is where realistic edge exists for retail.
+
+v2 redesign exposes a second function `compute_catalyst_score` that
+collapses the breakdown into a single 0-100 catalyst factor. The
+3-10 day digestion window is the cornerstone of that score and is
+preserved exactly.
 """
 from __future__ import annotations
 
@@ -100,18 +103,15 @@ def score_news_long(items: Iterable, now: datetime | None = None) -> NewsScoreBr
         avg = weighted_sentiment / total_weight
         score += avg * 30.0
 
-    # --- "Digesting catalyst" sweet spot detection ---
+    # --- "Digesting catalyst" sweet spot detection (PRESERVED) ---
     catalyst_is_digesting = False
     if strongest_pos_age is not None:
         if 3.0 <= strongest_pos_age <= 10.0:
-            # Sweet spot: news has been digested by market but still has runway
             catalyst_is_digesting = True
-            score += 8  # bonus for the realistic-edge zone
+            score += 8
         elif strongest_pos_age < 1.0 and strongest_pos_strength > 0.5:
-            # Very fresh strong news: chasing risk, slight penalty for retail
             score -= 4
 
-    # Sort & truncate top lists
     top_neg.sort(reverse=True)
     top_pos.sort(reverse=True)
 
@@ -125,6 +125,39 @@ def score_news_long(items: Iterable, now: datetime | None = None) -> NewsScoreBr
         top_negative_titles=[t for _, t in top_neg[:3]],
         top_positive_titles=[t for _, t in top_pos[:3]],
     )
+
+
+def compute_catalyst_score(news: NewsScoreBreakdown) -> float:
+    """Collapse the news breakdown into a single 0-100 factor for the
+    new weighted-score formula in engine.py.
+
+    The 3-10 day digestion window (from `score_news_long`) is the core.
+    This function does not RECOMPUTE digestion; it consumes the flag.
+
+    Schedule:
+      - Start at 50 (neutral baseline).
+      - +30 if positive catalyst AND digesting (sweet spot).
+      - +10 if positive catalyst but fresh (<3d) — chase risk, modest credit.
+      - +5 if positive catalyst but stale (>10d) — already priced.
+      - -40 if negative catalyst — kills the long thesis.
+      - 0 if no catalysts.
+    Final clamp [0, 100].
+    """
+    score = 50.0
+    age = news.catalyst_age_days
+
+    if news.has_negative_catalyst:
+        score -= 40
+
+    if news.has_positive_catalyst:
+        if news.catalyst_is_digesting:
+            score += 30
+        elif age is not None and age < 3.0:
+            score += 10
+        else:
+            score += 5
+
+    return max(0.0, min(100.0, score))
 
 
 # Backward-compat alias

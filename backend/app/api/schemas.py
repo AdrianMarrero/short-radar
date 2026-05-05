@@ -114,6 +114,18 @@ class ScoreOut(BaseModel):
     target_2: Optional[float]
     invalidation_reason: str
 
+    # v2 redesign — additive fields. Always optional for backward
+    # compatibility with legacy rows where raw_score_data is None.
+    tier: Optional[str] = None
+    category: Optional[str] = None
+    factor_scores: Optional[dict[str, float]] = None
+    multipliers: Optional[dict[str, float]] = None
+    warnings: list[str] = []
+    explanation: list[str] = []
+    entry_zone_status: Optional[str] = None
+    extension_status: Optional[str] = None
+    perf_1m_pct: Optional[float] = None
+
 
 class TickerDetailOut(BaseModel):
     instrument: InstrumentOut

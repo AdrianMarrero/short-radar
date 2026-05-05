@@ -7,6 +7,11 @@ export type SetupType =
 
 export type Conviction = "low" | "medium" | "high";
 
+export type Tier = "A+" | "A" | "B" | "C" | "D";
+export type Category = "investment" | "swing_trade" | "speculative" | "cyclical";
+export type EntryZoneStatus = "green" | "yellow" | "orange" | "red";
+export type ExtensionStatus = "ok" | "warming" | "extended" | "very_late";
+
 export interface ScoreOut {
   instrument_id: number;
   ticker: string;
@@ -32,6 +37,16 @@ export interface ScoreOut {
   target_1: number | null;
   target_2: number | null;
   invalidation_reason: string;
+  // v2 redesign — additive, optional for legacy rows
+  tier?: Tier | null;
+  category?: Category | null;
+  factor_scores?: Record<string, number> | null;
+  multipliers?: Record<string, number> | null;
+  warnings?: string[];
+  explanation?: string[];
+  entry_zone_status?: EntryZoneStatus | null;
+  extension_status?: ExtensionStatus | null;
+  perf_1m_pct?: number | null;
 }
 
 export interface InstrumentOut {

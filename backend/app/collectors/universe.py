@@ -16,6 +16,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+# Tickers Yahoo reports as delisted ("No data found, symbol may be delisted").
+# Skipped by the daily job to avoid wasted API calls and noisy logs. These may
+# still exist in the instruments DB from prior runs — the job-level filter is
+# the source of truth here.
+DELISTED_TICKERS: frozenset[str] = frozenset({
+    "MRO", "WISH", "JWN", "GPS", "STM.PA",
+})
+
+
 @dataclass(frozen=True)
 class Market:
     code: str
@@ -54,7 +63,7 @@ NYSE_TICKERS = (
     # Retail / Consumer
     "TGT", "LOW", "BBY", "M", "AEO", "ANF", "GAP",
     # Energy
-    "BKR", "SLB", "OXY", "DVN", "FCX", "NEM", "AA", "X", "CLF",
+    "BKR", "SLB", "OXY", "DVN", "FCX", "NEM", "AA", "CLF",
     # International ADRs
     "BABA", "PDD", "JD", "BIDU",
     # Speculative / often shorted

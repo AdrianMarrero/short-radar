@@ -25,8 +25,13 @@ from typing import Iterable, Optional
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.collectors.universe import MARKETS, all_tickers
-from app.collectors.market_data import fetch_history, fetch_info, fetch_news_yf
+from app.collectors.universe import DELISTED_TICKERS, MARKETS, all_tickers
+from app.collectors.market_data import (
+    fetch_history,
+    fetch_info_cached,
+    fetch_news_yf,
+    fetch_insider_transactions,
+)
 from app.collectors.macro import fetch_macro_news, classify_macro_item
 from app.collectors.sentiment import analyze_news
 from app.core.config import get_settings
@@ -38,6 +43,7 @@ from app.models import (
 )
 from app.scoring.engine import compute_final_score
 from app.scoring.technicals import compute_technical_snapshot
+from app.scoring.edge_factors import detect_macro_regime
 from app.services.llm import explain
 
 settings = get_settings()
@@ -194,6 +200,15 @@ def upsert_company_data(db: Session, instrument: Instrument, info, today: DateTy
     fund.cash = info.total_cash
     fund.eps = info.eps
     fund.pe = info.pe
+    # v3 edge-factor columns
+    fund.target_mean_price = getattr(info, "target_mean_price", None)
+    fund.target_high_price = getattr(info, "target_high_price", None)
+    fund.target_low_price = getattr(info, "target_low_price", None)
+    fund.recommendation_mean = getattr(info, "recommendation_mean", None)
+    fund.num_analyst_opinions = getattr(info, "num_analyst_opinions", None)
+    fund.earnings_growth_quarterly = getattr(info, "earnings_growth_quarterly", None)
+    fund.earnings_growth_yoy = getattr(info, "earnings_growth_yoy", None)
+    fund.revenue_growth = getattr(info, "revenue_growth", None)
 
     # Short data
     short = (
@@ -285,21 +300,45 @@ def upsert_score(db: Session, instrument_id: int, fs, today: DateType, llm_text:
     existing.invalidation_reason = fs.trade_plan.invalidation
     existing.llm_explanation = llm_text
     existing.signals_json = json.dumps(fs.to_dict(), default=str)
+    # v2 — flat, frontend-ready bundle. PG stores native JSON; SQLite stores TEXT.
+    raw = getattr(fs, "raw_score_data", None)
+    if raw is None:
+        raw = {}
+    # SQLite needs a JSON-serializable dict regardless; SQLAlchemy JSON
+    # type handles dict serialization on both backends transparently.
+    existing.raw_score_data = raw
 
 
 # ---------------- Main entry points ----------------
 
-def process_ticker(db: Session, instrument: Instrument, macro_events: list, today: DateType) -> bool:
-    """Process a single ticker. Returns True if a score was generated."""
+def process_ticker(
+    db: Session,
+    instrument: Instrument,
+    macro_events: list,
+    today: DateType,
+    *,
+    macro_regime: Optional[dict] = None,
+) -> str:
+    """Process a single ticker.
+
+    Returns one of: 'scored' (passed gates, persisted), 'rejected'
+    (failed gates — still persisted so the row is visible with tier=D
+    and warnings explaining why), or 'skipped' (no usable data).
+
+    ``macro_regime`` is the result of edge_factors.detect_macro_regime()
+    computed ONCE per daily run and forwarded to every ticker so the
+    regime tilt can be applied as a multiplier without re-fetching the
+    macro indices per ticker.
+    """
     df = fetch_history(instrument.ticker, period="1y")
     if df is None or df.empty:
-        return False
+        return "skipped"
 
     snap = compute_technical_snapshot(df)
     if snap is None:
-        return False
+        return "skipped"
 
-    info = fetch_info(instrument.ticker)
+    info = fetch_info_cached(db, instrument)
     upsert_prices(db, instrument.id, df)
     upsert_technicals(db, instrument.id, snap, today)
     upsert_company_data(db, instrument, info, today)
@@ -309,12 +348,41 @@ def process_ticker(db: Session, instrument: Instrument, macro_events: list, toda
     db.flush()  # garantizar IDs antes de query
     recent = recent_news_for(db, instrument.id, days=14)
 
-    fs = compute_final_score(snap, recent, info, macro_events, avg_volume=avg_volume_for(df))
+    # v3 edge-factor inputs ----------------------------------------------------
+    # Insider transactions: best-effort, may be None for many tickers.
+    insider_df = fetch_insider_transactions(instrument.ticker)
 
-    # Solo invocar LLM para scores relevantes (ahorra tokens)
+    # Short-interest history (~last 60 days) for delta computation.
+    short_cutoff = today - timedelta(days=60)
+    short_rows = (
+        db.query(ShortData)
+        .filter(ShortData.instrument_id == instrument.id)
+        .filter(ShortData.date >= short_cutoff)
+        .order_by(ShortData.date.asc())
+        .all()
+    )
+
+    fs = compute_final_score(
+        snap,
+        recent,
+        info,
+        macro_events,
+        avg_volume=avg_volume_for(df),
+        insider_df=insider_df,
+        short_rows=short_rows,
+        macro_regime=macro_regime,
+    )
+
+    if getattr(fs, "rejected", False):
+        # Persist as a zero-score row so the universe stays observable
+        # (the user can see why a name was filtered out via raw_score_data).
+        upsert_score(db, instrument.id, fs, today, "")
+        return "rejected"
+
+    # Only invoke LLM for relevant scores (saves tokens)
     llm_text = explain(instrument.ticker, instrument.name or instrument.ticker, fs) if fs.total >= 55 else ""
     upsert_score(db, instrument.id, fs, today, llm_text)
-    return True
+    return "scored"
 
 
 def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> dict:
@@ -335,7 +403,27 @@ def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> 
 
     instruments_processed = 0
     scores_generated = 0
+    scores_rejected = 0
     error_msg = ""
+
+    # v3: detect macro regime ONCE for the whole run. Lenient by design —
+    # any failure returns the neutral 'mixed' regime with all tilts = 1.0,
+    # which means the regime multiplier is a no-op.
+    macro_regime: dict = {}
+    try:
+        macro_regime = detect_macro_regime()
+        log.info(
+            "macro regime: %s (vix=%s, slope=%s, dxy_30d=%s, spx>50d=%s, spx>200d=%s)",
+            macro_regime.get("regime"),
+            macro_regime.get("vix"),
+            macro_regime.get("yield_curve_slope_pct"),
+            macro_regime.get("dxy_change_30d_pct"),
+            macro_regime.get("spx_above_50d"),
+            macro_regime.get("spx_above_200d"),
+        )
+    except Exception as e:
+        log.warning("macro regime detection failed: %s — defaulting to mixed", e)
+        macro_regime = {"regime": "mixed", "tilt": {}}
 
     try:
         with session_scope() as db:
@@ -355,14 +443,19 @@ def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> 
             macro_events = db.query(MacroEvent).filter(MacroEvent.date >= today - timedelta(days=14)).all()
 
         for inst_id, ticker in all_inst:
+            if ticker in DELISTED_TICKERS:
+                continue
             try:
                 with session_scope() as db:
                     inst = db.get(Instrument, inst_id)
                     if not inst:
                         continue
                     macro_events = db.query(MacroEvent).filter(MacroEvent.date >= today - timedelta(days=14)).all()
-                    if process_ticker(db, inst, macro_events, today):
+                    result = process_ticker(db, inst, macro_events, today, macro_regime=macro_regime)
+                    if result == "scored":
                         scores_generated += 1
+                    elif result == "rejected":
+                        scores_rejected += 1
                     instruments_processed += 1
             except Exception as e:
                 log.exception("error processing %s: %s", ticker, e)
@@ -384,10 +477,12 @@ def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> 
             run.error = error_msg
 
     log.info(
-        "daily job finished in %.1fs: %d instruments, %d scores",
+        "daily job finished in %.1fs: total=%d scored=%d rejected=%d skipped=%d",
         (finished - started).total_seconds(),
         instruments_processed,
         scores_generated,
+        scores_rejected,
+        max(0, instruments_processed - scores_generated - scores_rejected),
     )
 
     return {
@@ -395,6 +490,7 @@ def run_daily_job(triggered_by: str = "manual", limit: Optional[int] = None) -> 
         "status": "error" if error_msg else "ok",
         "instruments_processed": instruments_processed,
         "scores_generated": scores_generated,
+        "scores_rejected": scores_rejected,
         "elapsed_seconds": (finished - started).total_seconds(),
         "error": error_msg,
     }
